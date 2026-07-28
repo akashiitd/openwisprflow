@@ -4,12 +4,17 @@ import Foundation
 final class HotKeyManager {
     private var hotKeyRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
-    private var callback: (() -> Void)?
+    private var onPress: (() -> Void)?
+    private var onRelease: (() -> Void)?
 
-    func register(callback: @escaping () -> Void) {
-        self.callback = callback
+    func register(onPress: @escaping () -> Void, onRelease: @escaping () -> Void) {
+        self.onPress = onPress
+        self.onRelease = onRelease
 
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var eventTypes = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))
+        ]
         let selfPointer = Unmanaged.passUnretained(self).toOpaque()
 
         InstallEventHandler(
@@ -29,11 +34,16 @@ final class HotKeyManager {
 
                 guard hotKeyID.id == 1 else { return noErr }
                 let manager = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
-                manager.callback?()
+                let kind = GetEventKind(event)
+                if kind == UInt32(kEventHotKeyReleased) {
+                    manager.onRelease?()
+                } else {
+                    manager.onPress?()
+                }
                 return noErr
             },
-            1,
-            &eventType,
+            eventTypes.count,
+            &eventTypes,
             selfPointer,
             &eventHandlerRef
         )

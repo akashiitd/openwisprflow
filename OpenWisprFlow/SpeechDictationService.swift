@@ -2,6 +2,11 @@ import AVFoundation
 import Foundation
 import Speech
 
+private func log(_ message: String) {
+    let ts = ISO8601DateFormatter().string(from: Date())
+    fputs("[\(ts)] [OpenWisprFlow] \(message)\n", stderr)
+}
+
 enum DictationServiceError: LocalizedError {
     case microphoneDenied
     case speechDenied
@@ -32,22 +37,29 @@ final class SpeechDictationService {
             }
         }
 
+        log("Speech authorization status: \(speechStatus.rawValue)")
         guard speechStatus == .authorized else {
             throw DictationServiceError.speechDenied
         }
 
         let microphoneGranted = await AVCaptureDevice.requestAccess(for: .audio)
+        log("Microphone granted: \(microphoneGranted)")
         guard microphoneGranted else {
             throw DictationServiceError.microphoneDenied
         }
     }
 
-    func start(formatForCode: Bool, onUpdate: @escaping @MainActor (String) -> Void) async throws {
+    func start(
+        options: FormatOptions,
+        locale: String,
+        dictionary: [String],
+        onUpdate: @escaping @MainActor (String) -> Void
+    ) async throws {
         try await requestPermissions()
 
         let session = LegacySpeechSession()
         legacySession = session
-        try session.start(formatForCode: formatForCode, onUpdate: onUpdate)
+        try session.start(options: options, locale: locale, dictionary: dictionary, onUpdate: onUpdate)
     }
 
     func stop() async throws -> String {
@@ -66,26 +78,29 @@ private final class LegacySpeechSession {
     private var recognitionTask: SFSpeechRecognitionTask?
     private var latestText = ""
 
-    func start(formatForCode: Bool, onUpdate: @escaping @MainActor (String) -> Void) throws {
-        guard let recognizer = SFSpeechRecognizer(), recognizer.isAvailable else {
+    func start(
+        options: FormatOptions,
+        locale: String,
+        dictionary: [String],
+        onUpdate: @escaping @MainActor (String) -> Void
+    ) throws {
+        let recognizer = locale.isEmpty
+            ? SFSpeechRecognizer()
+            : SFSpeechRecognizer(locale: Locale(identifier: locale))
+        guard let recognizer, recognizer.isAvailable else {
+            log("SFSpeechRecognizer unavailable")
             throw DictationServiceError.recognizerUnavailable
         }
+        log("SFSpeechRecognizer locale: \(recognizer.locale.identifier), available: \(recognizer.isAvailable)")
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.taskHint = .dictation
-        request.contextualStrings = [
-            "SwiftUI",
-            "Xcode",
-            "TypeScript",
-            "JavaScript",
-            "OpenWisprFlow",
-            "function",
-            "variable",
-            "constant",
-            "async",
-            "await"
+        let builtInTerms = [
+            "SwiftUI", "Xcode", "TypeScript", "JavaScript", "OpenWisprFlow",
+            "function", "variable", "constant", "async", "await"
         ]
+        request.contextualStrings = builtInTerms + dictionary.filter { !$0.isEmpty }
         if #available(macOS 13.0, *) {
             request.addsPunctuation = true
         }
@@ -94,20 +109,34 @@ private final class LegacySpeechSession {
 
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
+        log("Audio input format: \(inputFormat)")
+        log("Sample rate: \(inputFormat.sampleRate), channels: \(inputFormat.channelCount)")
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
             request.append(buffer)
         }
 
+        log("Starting recognition task...")
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
 
+            if let error = error {
+                log("Recognition error: \(error.localizedDescription)")
+            }
+
             if let text = result?.bestTranscription.formattedString {
-                let formatted = CodingSpeechFormatter.format(text, enabled: formatForCode)
+                log("Got transcription: \(text)")
+                let formatted = TranscriptFormatter.apply(text, options)
                 guard !formatted.isEmpty else { return }
                 self.latestText = formatted
                 Task { @MainActor in
                     onUpdate(formatted)
                 }
+            } else if result == nil && error == nil {
+                log("Recognition callback: no result, no error")
+            }
+
+            if let result = result {
+                log("isFinal: \(result.isFinal)")
             }
 
             if error != nil || result?.isFinal == true {
@@ -118,6 +147,7 @@ private final class LegacySpeechSession {
 
         audioEngine.prepare()
         try audioEngine.start()
+        log("Audio engine started successfully")
     }
 
     func stop() async throws -> String {
@@ -131,29 +161,5 @@ private final class LegacySpeechSession {
             throw DictationServiceError.noSpeechCaptured
         }
         return latestText
-    }
-}
-
-private extension AVAudioPCMBuffer {
-    func deepCopy() -> AVAudioPCMBuffer? {
-        guard let copy = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameLength) else {
-            return nil
-        }
-
-        copy.frameLength = frameLength
-        let sourceBuffers = UnsafeMutableAudioBufferListPointer(mutableAudioBufferList)
-        let destinationBuffers = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
-
-        for index in 0..<sourceBuffers.count {
-            guard let source = sourceBuffers[index].mData,
-                  let destination = destinationBuffers[index].mData else {
-                continue
-            }
-
-            memcpy(destination, source, Int(sourceBuffers[index].mDataByteSize))
-            destinationBuffers[index].mDataByteSize = sourceBuffers[index].mDataByteSize
-        }
-
-        return copy
     }
 }

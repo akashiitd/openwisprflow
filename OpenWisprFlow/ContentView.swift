@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
+    @State private var showSettings = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -22,6 +23,9 @@ struct ContentView: View {
         }
         .padding(22)
         .frame(width: 520, height: 390)
+        .sheet(isPresented: $showSettings) {
+            SettingsView().environmentObject(appState)
+        }
     }
 
     private var header: some View {
@@ -47,16 +51,18 @@ struct ContentView: View {
                 .padding(.vertical, 6)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            Button {
+                showSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.borderless)
         }
     }
 
     private var controls: some View {
         VStack(spacing: 12) {
-            HStack {
-                Toggle("Code phrases", isOn: $appState.formatForCode)
-                Toggle("Auto-paste from hotkey", isOn: $appState.autoPaste)
-            }
-
             HStack(spacing: 10) {
                 Button {
                     appState.toggleFromUI()

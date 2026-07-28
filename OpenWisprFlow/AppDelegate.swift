@@ -11,11 +11,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         configureWindow()
         configureStatusItem()
-        hotKeyManager.register {
-            Task { @MainActor in
-                AppState.shared.toggleFromHotKey()
-            }
-        }
+        hotKeyManager.register(
+            onPress: { Task { @MainActor in AppState.shared.hotKeyPressed() } },
+            onRelease: { Task { @MainActor in AppState.shared.hotKeyReleased() } }
+        )
     }
 
     private func configureWindow() {
